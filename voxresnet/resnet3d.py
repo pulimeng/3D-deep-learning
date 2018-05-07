@@ -8,18 +8,17 @@ from keras.models import Model
 from keras.layers import (
     Input,
     Activation,
-    Merge,
-    Reshape,
-    Permute
+    Dense,
+    Flatten
 )
 from keras.layers.convolutional import (
     Conv3D,
-    Conv3DTranspose
+    AveragePooling3D,
+    MaxPooling3D
 )
-from keras.layers.merge import Concatenate, add
+from keras.layers.merge import add
 from keras.layers.normalization import BatchNormalization
 from keras.regularizers import l2
-from keras.utils.generic_utils import get_custom_objects
 from keras import backend as K
 
 
@@ -188,10 +187,7 @@ def _get_block(identifier):
             raise ValueError('Invalid {}'.format(identifier))
         return res
     return identifier
-
-def custom_activation(x):
-    return K.expand_dims(K.argmax(x, axis = CHANNEL_AXIS),axis = CHANNEL_AXIS)
-
+    
 class VoxResNetBuilder(object):
     """VoxResNet."""
 
@@ -209,7 +205,6 @@ class VoxResNetBuilder(object):
             model: a 3D ResNet model that takes a 5D tensor (volumetric images
             in batch) as input and returns a 1D vector (prediction) as output.
         """
-        get_custom_objects().update({'argmax_activation': Activation(custom_activation)})
         _handle_data_format()
         if len(input_shape) != 4:
             raise ValueError("Input shape should be a tuple "
@@ -219,32 +214,19 @@ class VoxResNetBuilder(object):
                              "for theano as backend")
 
         block_fn = _get_block(block_fn)
-        v_input = Input(shape=input_shape)
+        input = Input(shape=input_shape)
         # conv1
         conv1a = _conv_bn_relu3D(filters=32, kernel_size=(3, 3, 3),
                                 strides=(1, 1, 1),
                                 kernel_regularizer=l2(reg_factor)
-                                )(v_input)
+                                )(input)
         conv1b = _conv_bn_relu3D(filters=32, kernel_size=(3, 3, 3),
                                 strides=(1, 1, 1),
                                 kernel_regularizer=l2(reg_factor)
                                 )(conv1a)
-        # C1
-        C1d = Conv3DTranspose(filters = 32, kernel_size = (3,3,3),
-                             strides=(1, 1, 1),
-                             kernel_regularizer=l2(reg_factor),
-                             padding = 'same'
-                             )(conv1b)
-        C1 = Conv3D(filters = 32, kernel_size = (1,1,1),
-                    strides = (1,1,1),  
-                    padding = 'same',
-                    kernel_regularizer=l2(reg_factor)
-                    )(C1d)
-        
         conv1c = Conv3D(filters=64, kernel_size=(3, 3, 3),
                                 strides=(2, 2, 2),
-                                kernel_regularizer=l2(reg_factor),
-                                padding = 'same'
+                                kernel_regularizer=l2(reg_factor)
                                 )(conv1b)
 
         # voxres block2-3
@@ -253,33 +235,44 @@ class VoxResNetBuilder(object):
                                   kernel_regularizer=l2(reg_factor),
                                   repetitions=2, is_first_layer=False
                                   )(conv1c)
-        # C2
-        C2d = Conv3DTranspose(filters = filters, kernel_size = (3,3,3),
-                             strides=(2, 2, 2),
-                             kernel_regularizer=l2(reg_factor),
-                             padding = 'same')(block23)
-        
-        C2 = Conv3D(filters = filters, kernel_size = (1,1,1),
-                    strides = (1,1,1),
-                    padding = 'same',
-                    kernel_regularizer=l2(reg_factor)
-                    )(C2d)
+#        # conv4
+#        conv4 =  _bn_relu_conv3d(filters=filters, kernel_size=(3, 3, 3),
+#                                strides=(2, 2, 2),
+#                                kernel_regularizer=l2(reg_factor)
+#                                )(block23)
+#        # voxres block5-6
+#        block56 = _residual_block3d(block_fn, filters=filters,
+#                                  kernel_regularizer=l2(reg_factor),
+#                                  repetitions=2, is_first_layer=False
+#                                  )(conv4)
+#        # conv7
+#        conv7 =  _bn_relu_conv3d(filters=filters, kernel_size=(3, 3, 3),
+#                                strides=(2, 2, 2),
+#                                kernel_regularizer=l2(reg_factor)
+#                                )(block56)
+#        # block8-9
+#        block89 = _residual_block3d(block_fn, filters=filters,
+#                                  kernel_regularizer=l2(reg_factor),
+#                                  repetitions=2, is_first_layer=False
+#                                  )(conv7)
+        # last activation
+        block_output = _bn_relu(block23)
 
-        # concatenation and segmentation
-        C = Concatenate(axis = -1)([C1, C2])
-        C = Conv3D(filters = num_outputs, kernel_size = (1,1,1),
-            strides = (1,1,1),
-            padding = 'same',
-            kernel_regularizer=l2(reg_factor)
-            )(C)
-#        F = Reshape((input_shape[0]*input_shape[1]*input_shape[2]*num_outputs,))(C)
-#        C = Activation('softmax')(C)
-#        o = Activation(custom_activation)(o)
+        # average poll and classification
+        pool1 = AveragePooling3D(pool_size=(block23._keras_shape[DIM1_AXIS],
+                                            block23._keras_shape[DIM2_AXIS],
+                                            block23._keras_shape[DIM3_AXIS]),
+                                 strides=(1, 1, 1))(block_output)
+        flatten1 = Flatten()(pool1)
+        dense = Dense(units=num_outputs,
+                      kernel_initializer="he_normal",
+                      activation="softmax",
+                      kernel_regularizer=l2(reg_factor))(flatten1)
 
-        model = Model(inputs=v_input, outputs=C)
+        model = Model(inputs=input, outputs=dense)
         return model
     
     @staticmethod
-    def build_voxresnet(input_shape, num_outputs, reg_factor=1e-4):
+    def build_resnet3d(input_shape, num_outputs, reg_factor=1e-4):
         return VoxResNetBuilder.build(input_shape, num_outputs, basic_block, 
                                       reg_factor=reg_factor)
