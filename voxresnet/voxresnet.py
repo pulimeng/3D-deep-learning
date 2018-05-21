@@ -10,7 +10,7 @@ from keras.layers import (
     Activation,
     Merge,
     Reshape,
-    Permute
+    Lambda
 )
 from keras.layers.convolutional import (
     Conv3D,
@@ -190,7 +190,7 @@ def _get_block(identifier):
     return identifier
 
 def custom_activation(x):
-    return K.expand_dims(K.argmax(x, axis = CHANNEL_AXIS),axis = CHANNEL_AXIS)
+    return K.cast(K.expand_dims(K.argmax(x, axis = CHANNEL_AXIS),axis = CHANNEL_AXIS),'int64')
 
 class VoxResNetBuilder(object):
     """VoxResNet."""
@@ -273,9 +273,9 @@ class VoxResNetBuilder(object):
             kernel_regularizer=l2(reg_factor)
             )(C)
 #        F = Reshape((input_shape[0]*input_shape[1]*input_shape[2]*num_outputs,))(C)
-#        C = Activation('softmax')(C)
-#        o = Activation(custom_activation)(o)
-
+        C = Activation('softmax')(C)
+#        C = Lambda(custom_activation, output_shape = (input_shape[0],input_shape[1],input_shape[2],1))(C)
+        
         model = Model(inputs=v_input, outputs=C)
         return model
     
